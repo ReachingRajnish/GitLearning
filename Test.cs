@@ -1,19 +1,18 @@
+        private async Task<List<IObjectInstance>> GetActiveRecordTypes(List<string> tobeMappedRecordTypeIds) {
+            var fields = new List<string> { FIELD_ID, FIELD_NAME, FIELD_RECORDTYPE_ACTIVE };
+            var racordTypes = await recordTypeRepository.GetRecordTypesByIds(tobeMappedRecordTypeIds, fields);
+            var activeRecordTypes = racordTypes?.Where(x => x.GetValue<bool>(FIELD_RECORDTYPE_ACTIVE));
+            return activeRecordTypes?.ToList();
+        }
 
-        /// <summary>
-        /// Gets List of Recordtypes.
-        /// </summary>
-        /// <param name="ids">List of Ids</param>
-        /// <param name="fields">List of Fields to be retrieved</param>
-        /// <returns></returns>
-        public async Task<List<IObjectInstance>> GetRecordTypesByIds(List<string> ids, List<string> fields) {
-            var time = System.Diagnostics.Stopwatch.StartNew();
-            var query = new Query(APTTUS_OBJECT_RECORDTYPE);
-            if(fields != null && fields.Any()) {
-                query.AddColumns(fields.ToArray());
+        private async Task MapRecordTypeAssociatedWithClauses(string obligationId, List<IObjectInstance> clauseRecordTypes) {
+            var obligationRecordTypes = await obligationAdminRepository.GetReferences(OBJECT_OBLIGATION_RECORDTYPE, new List<string> { obligationId }, FIELD_OBLIGATIONID, FIELD_RECORDTYPEID);
+            var tobeMappedRecordTypes = GetTobeMappedRecordTypes(obligationRecordTypes, clauseRecordTypes);
+            if(tobeMappedRecordTypes.Any()) {
+                var tobeMappedRecordTypeIds = tobeMappedRecordTypes.Select(x => x.GetValue<IObjectInstance>(FIELD_RECORDTYPEID))
+                     .GroupBy(x => x.GetId())
+                     .Select(y => y.FirstOrDefault().GetId()).ToList();
+                var activeRecordTypes = await GetActiveRecordTypes(tobeMappedRecordTypeIds);
+                await obligationAdminRepository.CreateObligationReference(obligationId, activeRecordTypes, OBJECT_OBLIGATION_RECORDTYPE, FIELD_RECORDTYPEID);
             }
-            query.Criteria = new Expression(ExpressionOperator.AND);
-            query.Criteria.AddCondition(new Condition(CommonEntityFields.NAME, FilterOperator.In, ids));
-            var tempateRecord = await dataAccessRepository.GetRecordsAsync(query);
-            log.LogTrace("TemplateRepository:GetTemplatesByIds:TotalTimeTaken{0}", time.ElapsedMilliseconds.ToString());
-            return tempateRecord?.ToList();
         }
