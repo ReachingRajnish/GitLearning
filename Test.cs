@@ -1,133 +1,198 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.IO;
+using System.Net;
 using System.Text;
 using System.Threading.Tasks;
-using Apttus.Chronos.Client;
-using Apttus.Chronos.Common.Api;
-using Apttus.Chronos.Common.DTO.Shared;
-using Apttus.Chronos.Common.Shared;
-using System.Net;
-using Apttus.Messaging.Core.Models.Common;
 
-namespace Apttus.DocGen.Domain.Util
-{
-    public class ChronosClient : IChronosClient
-    {
+namespace Apttus.DocGen.Domain.Util {
+    public class RestClient {
+        private readonly Encoding encoding = Encoding.UTF8;
 
-        private ChronosConfig _config;
-        private string _tenantId;
+        public string _authToken { get; set; }
 
-        public ChronosClient(string apiEndpoint, string tenantId, string clientId, string clientSecret, bool enableHttps)
-        {
-            _config = new ChronosConfig();
-            _config.ApiEndPoint = apiEndpoint;
-            _config.ClientId = clientId;
-            _config.ClientSecret = clientSecret;
-            _config.EnableHttps = enableHttps;
-            _config.TenantId = tenantId;
-            this._tenantId = tenantId;
-            _config.Validate();
+        public RestClient() {
+
         }
 
+        public RestClient(string authToken) {
+            this._authToken = authToken;
+        }
 
-        public async Task<MacroApiResponse> createChronosJobAsync(string macroName, string eventMessage, string serviceName, string eventType, string cName,
-            string callbackEndpoint, object data, int interval, string frequency, DateTime startTime)
-        {
+        public async Task<string> ExecuteRestAsync(string uri, string methodType) {
+            HttpWebRequest httpWebRequest = CreateHttpRequest(uri, methodType, _authToken);
+            Task<string> response;
+            using(HttpWebResponse myHttpWebResponse = (HttpWebResponse)httpWebRequest.GetResponse())
+            using(Stream stream = myHttpWebResponse.GetResponseStream())
+            using(StreamReader reader = new StreamReader(stream)) {
+                response = reader.ReadToEndAsync();
+            }
 
-            //TenantClient tenantclient = new TenantClient(_config);
-            //var isAppRegistered = tenantclient.GetTenant().Result;
-            //bool onboardTenant = isAppRegistered.StatusCode == HttpStatusCode.OK ? false : true;
+            return await response;
 
-            //if (onboardTenant)
-            //{
-            //    TenantApiRequest apirequest = new TenantApiRequest();
-            //    apirequest.TenantRequest.SubDomain = _tenantId;
-            //    TenantApiResponse respCreate = tenantclient.OnboardTenant(apirequest).Result;
-            //    TenantApiResponse response = tenantclient.GetTenant().Result;
-            //}
+        }
 
-            MacroClient macroClient = new MacroClient(_config);
-            MacroApiRequest apiRequest = new MacroApiRequest();
-            apiRequest.MacroName = macroName;
-            apiRequest.CronExpression.StartTime = DateTime.Now;
-            apiRequest.EventMessage = new EventMessage(eventMessage);
-            apiRequest.EventMessage.CorrelationId = Guid.NewGuid().ToString();
-            apiRequest.EventMessage.TenantId = _tenantId;
-            apiRequest.EventMessage.Source = serviceName;
-            apiRequest.EventMessage.Type = eventType + macroName;
+        public async Task<string> PostRequestAsync(string uri, string authToken, string json) {
+            HttpWebRequest httpWebRequest = CreateHttpRequest(uri, "POST", authToken);
+            httpWebRequest.ContentType = "application/json; charset=UTF-8";
+            byte[] data = Encoding.UTF8.GetBytes(json);
 
-            //Settings for callback action on API router                
-            apiRequest.EventMessage.CName = cName;
+            Stream requestStream = httpWebRequest.GetRequestStream();
+            requestStream.Write(data, 0, data.Length);
+            requestStream.Close();
 
-            Dictionary<string, string> addHeaders = new Dictionary<string, string>();
-           
-            apiRequest.MacroActions.Add(new MacroAction()
-            {
-                ActionType = Apttus.Chronos.Common.Enum.ActionType.NOTIFYAPIROUTER, //TODO: change to NotifyApiRouter.
-                CallbackAction = new CallbackAction()
-                {
-                    CallbackEndpoint = callbackEndpoint,
-                    CallbackData = data
+            HttpWebResponse myHttpWebResponse = (HttpWebResponse)httpWebRequest.GetResponse();
+            Stream responseStream = myHttpWebResponse.GetResponseStream();
+            StreamReader myStreamReader = new StreamReader(responseStream, Encoding.Default);
+
+            Task<string> Response = myStreamReader.ReadToEndAsync();
+
+            myStreamReader.Close();
+            responseStream.Close();
+            myHttpWebResponse.Close();
+
+            return await Response;
+        }
+
+        public async Task<string> PostRequestForContentLocationAsync(string uri, string authToken, string json) {
+            HttpWebRequest httpWebRequest = CreateHttpRequest(uri, "POST", authToken);
+            httpWebRequest.ContentType = "application/json; charset=UTF-8";
+            byte[] data = Encoding.UTF8.GetBytes(json);
+
+            Stream requestStream = httpWebRequest.GetRequestStream();
+            await requestStream.WriteAsync(data, 0, data.Length);
+            requestStream.Close();
+
+            HttpWebResponse myHttpWebResponse = (HttpWebResponse)(await httpWebRequest.GetResponseAsync());
+            string ContentLocation = myHttpWebResponse.ResponseUri.ToString();
+            myHttpWebResponse.Close();
+
+            return ContentLocation;
+
+        }
+
+        public async Task<string> uploadFile(string requestUrl, Dictionary<string, object> postParameters, byte[] file, string fileName, string contentType) {
+
+            postParameters.Add("file", new RestClient.FileParameter(file, fileName, contentType));
+
+            // Create request and receive response
+            HttpWebResponse webResponse = await MultipartFormDataPost(requestUrl, "docgen", postParameters);
+
+            // Process response
+            StreamReader responseReader = new StreamReader(webResponse.GetResponseStream());
+            string fullResponse = responseReader.ReadToEnd();
+            webResponse.Close();
+
+            return fullResponse;
+
+        }
+
+        private HttpWebRequest CreateHttpRequest(string uri, string methodType, string authToken) {
+            HttpWebRequest httpWebRequest = (HttpWebRequest)WebRequest.Create(uri);
+            httpWebRequest.ServicePoint.Expect100Continue = false;
+            httpWebRequest.Method = methodType;
+            httpWebRequest.KeepAlive = true;
+            httpWebRequest.Headers.Add("Authorization", "Bearer " + authToken);
+
+            httpWebRequest.Headers.Add("Accept-Language", "en-US,en;q=0.8");
+            httpWebRequest.Accept = "application/json, text/plain,text/html , */*";
+            httpWebRequest.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+
+            httpWebRequest.AllowAutoRedirect = false;
+
+            return httpWebRequest;
+        }
+
+        private byte[] GetMultipartFormData(Dictionary<string, object> postParameters, string boundary) {
+            Stream formDataStream = new System.IO.MemoryStream();
+            bool needsCLRF = false;
+
+            foreach(var param in postParameters) {
+                if(needsCLRF)
+                    formDataStream.Write(encoding.GetBytes("\r\n"), 0, encoding.GetByteCount("\r\n"));
+
+                needsCLRF = true;
+
+                if(param.Value is FileParameter) {
+                    FileParameter fileToUpload = (FileParameter)param.Value;
+
+                    // Add just the first part of this param, since we will write the file data directly to the Stream
+                    string header = string.Format("--{0}\r\nContent-Disposition: form-data; name=\"{1}\"; filename=\"{2}\"\r\nContent-Type: {3}\r\n\r\n",
+                        boundary,
+                        param.Key,
+                        fileToUpload.FileName ?? param.Key,
+                        fileToUpload.ContentType ?? "application/octet-stream");
+
+                    formDataStream.Write(encoding.GetBytes(header), 0, encoding.GetByteCount(header));
+
+                    // Write the file data directly to the Stream, rather than serializing it to a string.
+                    formDataStream.Write(fileToUpload.File, 0, fileToUpload.File.Length);
+                } else {
+                    string postData = string.Format("--{0}\r\nContent-Disposition: form-data; name=\"{1}\"\r\n\r\n{2}",
+                        boundary,
+                        param.Key,
+                        param.Value);
+                    formDataStream.Write(encoding.GetBytes(postData), 0, encoding.GetByteCount(postData));
                 }
-            });
+            }
 
-            apiRequest.CronExpression.Interval = interval;
-            apiRequest.CronExpression.Frequency = frequency;
-            apiRequest.CronExpression.StartTime = startTime;
-            apiRequest.Validate();
+            // Add the end of the request.  Start with a newline
+            string footer = "\r\n--" + boundary + "--\r\n";
+            formDataStream.Write(encoding.GetBytes(footer), 0, encoding.GetByteCount(footer));
 
-            MacroApiResponse resp = new MacroApiResponse();
-            //var getMacro = await macroClient.GetMacro(macroName);
-            //if (getMacro.StatusCode != HttpStatusCode.OK)
-            //{
-                resp = await macroClient.CreateMacro(apiRequest);
-            //}
-            //else
-            //{
-            //    resp = await macroClient.UpdateMacro(apiRequest.MacroName, apiRequest); // Updates existing macro
-            //}
+            // Dump the Stream into a byte[]
+            formDataStream.Position = 0;
+            byte[] formData = new byte[formDataStream.Length];
+            formDataStream.Read(formData, 0, formData.Length);
+            formDataStream.Close();
 
-            return resp;
-
+            return formData;
         }
 
-        public async Task<MacroApiResponse> UpdateMacroAsync(string macroName, MacroApiRequest apiRequest)
-        {
-            MacroClient macroClient = new MacroClient(_config);
-            return await macroClient.UpdateMacro(macroName, apiRequest);
+        private async Task<HttpWebResponse> MultipartFormDataPost(string postUrl, string userAgent, Dictionary<string, object> postParameters) {
+            string formDataBoundary = String.Format("----------{0:N}", Guid.NewGuid());
+            string contentType = "multipart/form-data; boundary=" + formDataBoundary;
+
+            byte[] formData = GetMultipartFormData(postParameters, formDataBoundary);
+
+            return await PostForm(postUrl, userAgent, contentType, formData);
         }
 
+        private async Task<HttpWebResponse> PostForm(string postUrl, string userAgent, string contentType, byte[] formData) {
+            HttpWebRequest request = WebRequest.Create(postUrl) as HttpWebRequest;
 
-        public async Task<MacroApiResponse> TriggerMacroAsync(string macroName)
-        {
-            MacroClient macroClient = new MacroClient(_config);
-            return await macroClient.TriggerMacro(macroName);
+            if(request == null) {
+                throw new NullReferenceException("request is not a http request");
+            }
+
+            request.Method = "POST";
+            request.ContentType = contentType;
+            request.UserAgent = userAgent;
+            request.CookieContainer = new CookieContainer();
+            request.ContentLength = formData.Length;
+
+
+            request.Headers.Add("Authorization", "Bearer " + _authToken);
+
+            using(Stream requestStream = request.GetRequestStream()) {
+                requestStream.Write(formData, 0, formData.Length);
+                requestStream.Close();
+            }
+
+            return await request.GetResponseAsync() as HttpWebResponse;
         }
 
-        public async Task<MacroApiResponse> GetAllTenantMacroAsync(string macroName)
-        {
-            MacroClient macroClient = new MacroClient(_config);
-            return await macroClient.GetMacro();
+        public class FileParameter {
+            public byte[] File { get; set; }
+            public string FileName { get; set; }
+            public string ContentType { get; set; }
+            public FileParameter(byte[] file) : this(file, null) { }
+            public FileParameter(byte[] file, string filename) : this(file, filename, null) { }
+            public FileParameter(byte[] file, string filename, string contenttype) {
+                File = file;
+                FileName = filename;
+                ContentType = contenttype;
+            }
         }
-
-        public async Task<MacroApiResponse> GetMacroAsync(string macroName)
-        {
-            MacroClient macroClient = new MacroClient(_config);
-            return await macroClient.GetMacro(macroName);
-        }
-
-        public async Task<MacroApiResponse> GetMacroHistoryAsync(string macroName)
-        {
-            MacroClient macroClient = new MacroClient(_config);
-            return await macroClient.GetMacroHistory(macroName);
-        }
-
-        public async Task<MacroApiResponse> DeleteMacroAsync(string macroName)
-        {
-            MacroClient macroClient = new MacroClient(_config);
-            return await macroClient.DeleteMacro(macroName);
-        }
-
     }
 }
